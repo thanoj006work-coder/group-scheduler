@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Group Sync Scheduler</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        h1 { text-align: center; }
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .controls input {
+            padding: 8px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 80px repeat(7, 1fr);
+            gap: 2px;
+            user-select: none; 
+        }
+        .header-cell, .time-cell {
+            background: #e0e0e0;
+            padding: 10px 5px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 14px;
+            border-radius: 4px;
+        }
+        .time-cell {
+            background: none;
+            text-align: right;
+            padding-right: 15px;
+            color: #666;
+        }
+        .slot {
+            background: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .slot:hover {
+            border: 1px solid #999;
+        }
+        .legend {
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .legend-box {
+            width: 20px; height: 20px; border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>📅 Group Video Call Scheduler</h1>
+    
+    <div class="controls">
+        <div>
+            <label for="userName"><strong>Your Name: </strong></label>
+            <input type="text" id="userName" placeholder="e.g. Alex" value="You">
+        </div>
+        <div id="timezoneDisplay"><strong>Your Timezone: </strong> Detecting...</div>
+    </div>
+
+    <div class="grid-container" id="scheduleGrid">
+        </div>
+
+    <div class="legend">
+        <span>0 Available</span>
+        <div class="legend-box" style="background: #f9f9f9; border: 1px solid #ccc;"></div>
+        <div class="legend-box" style="background: #c8e6c9;"></div>
+        <div class="legend-box" style="background: #81c784;"></div>
+        <div class="legend-box" style="background: #4caf50;"></div>
+        <div class="legend-box" style="background: #2e7d32;"></div>
+        <span>Everyone Available!</span>
+    </div>
+
+    <script type="module">
+        // Import Firebase SDKs from CDNs
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+        // Your specific Firebase configuration
+        const firebaseConfig = {
+          apiKey: "AIzaSyCx2cYQv5onODpYdgEu3OFA0ZtR_dhu9Yk",
+          authDomain: "group-sync-scheduler.firebaseapp.com",
+          projectId: "group-sync-scheduler",
+          storageBucket: "group-sync-scheduler.firebasestorage.app",
+          messagingSenderId: "754410541963",
+          appId: "1:754410541963:web:2e530add866adaa024d58e"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Grid Logic Setup
+        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const hours = Array.from({length: 15}, (_, i) => i + 8); // 8 AM to 10 PM
+        let currentUser = document.getElementById('userName').value || 'Anonymous';
+        let isMouseDown = false;
+        
+        // Auto-detect timezone
+        document.getElementById('timezoneDisplay').innerHTML = 
+            `<strong>Your Timezone: </strong> ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
+
+        const grid = document.getElementById('scheduleGrid');
+
+        // Render Headers
+        grid.appendChild(createDiv('header-cell', 'Time'));
+        days.forEach(day => grid.appendChild(createDiv('header-cell', day)));
+
+        // Render Grid
+        hours.forEach(hour => {
+            grid.appendChild(createDiv('time-cell', `${hour}:00`));
+            days.forEach(day => {
+                const slotId = `${day}-${hour}`;
+                const slot = createDiv('slot', '');
+                slot.dataset.id = slotId;
+                slot.id = slotId; 
+                
+                slot.addEventListener('mousedown', () => updateDatabase(slotId));
+                slot.addEventListener('mouseover', () => { if (isMouseDown) updateDatabase(slotId); });
+                
+                grid.appendChild(slot);
+            });
+        });
+
+        document.addEventListener('mousedown', () => isMouseDown = true);
+        document.addEventListener('mouseup', () => isMouseDown = false);
+        
+        document.getElementById('userName').addEventListener('input', (e) => {
+            currentUser = e.target.value || 'Anonymous';
+        });
+
+        function createDiv(className, text) {
+            const div = document.createElement('div');
+            div.className = className;
+            div.textContent = text;
+            return div;
+        }
+
+        // Real-time Database Interaction
+        let localDataState = {};
+
+        // Listen to the Firestore document for real-time updates
+        const docRef = doc(db, "schedules", "main-group-call");
+        onSnapshot(docRef, (docSnap) => {
+            if (docSnap.exists()) {
+                localDataState = docSnap.data();
+                renderColors();
+            }
+        });
+
+        async function updateDatabase(slotId) {
+            let usersInSlot = localDataState[slotId] || [];
+            
+            const userIndex = usersInSlot.indexOf(currentUser);
+            if (userIndex > -1) {
+                usersInSlot.splice(userIndex, 1); // Remove
+            } else {
+                usersInSlot.push(currentUser); // Add
+            }
+
+            localDataState[slotId] = usersInSlot;
+            renderColors();
+
+            try {
+                await setDoc(docRef, {
+                    [slotId]: usersInSlot
+                }, { merge: true }); 
+            } catch (error) {
+                console.error("Error writing document: ", error);
+            }
+        }
+
+        function renderColors() {
+            document.querySelectorAll('.slot').forEach(slot => {
+                const slotId = slot.dataset.id;
+                const usersAvailable = localDataState[slotId] ? localDataState[slotId].length : 0;
+                
+                if (usersAvailable === 0) {
+                    slot.style.backgroundColor = '#f9f9f9';
+                } else if (usersAvailable === 1) {
+                    slot.style.backgroundColor = '#c8e6c9'; 
+                } else if (usersAvailable === 2) {
+                    slot.style.backgroundColor = '#81c784'; 
+                } else {
+                    slot.style.backgroundColor = '#2e7d32'; 
+                }
+
+                slot.title = usersAvailable > 0 ? `Available: ${localDataState[slotId].join(', ')}` : '';
+            });
+        }
+    </script>
+</body>
+</html>
